@@ -1,480 +1,541 @@
 <script lang="ts">
     import { onMount } from 'svelte';
 
-    // Helper to format time (HH:MM)
-    function formatTime(date: Date): string {
+    let currentDate = new Date();
+    let currentMonth = currentDate.getMonth();
+    let currentYear = currentDate.getFullYear();
+
+    let showFullTimeRange = false;
+
+    let weekViewDays = [];
+    let timeSlots = [];
+    let draggedEvent = null;
+    let draggedEventOriginalTime = null;
+
+    let events = [
+        {
+            id: 1,
+            title: 'Team Meeting',
+            date: new Date(currentYear, currentMonth, 15, 10, 0),
+            endDate: new Date(currentYear, currentMonth, 15, 11, 30),
+            color: 'bg-pink-500'
+        },
+        {
+            id: 2,
+            title: 'Project Deadline',
+            date: new Date(currentYear, currentMonth, 22, 14, 0),
+            endDate: new Date(currentYear, currentMonth, 22, 15, 0),
+            color: 'bg-orange-500'
+        },
+        {
+            id: 3,
+            title: 'Client Call',
+            date: new Date(currentYear, currentMonth, 8, 9, 0),
+            endDate: new Date(currentYear, currentMonth, 8, 10, 0),
+            color: 'bg-cyan-500'
+        },
+        {
+            id: 4,
+            title: 'Morning Workout',
+            date: new Date(currentYear, currentMonth, currentDate.getDate(), 6, 0),
+            endDate: new Date(currentYear, currentMonth, currentDate.getDate(), 7, 0),
+            color: 'bg-green-500'
+        },
+        {
+            id: 5,
+            title: 'Lunch with Client',
+            date: new Date(currentYear, currentMonth, currentDate.getDate(), 12, 30),
+            endDate: new Date(currentYear, currentMonth, currentDate.getDate(), 13, 30),
+            color: 'bg-purple-500'
+        }
+    ];
+
+    let weekdays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+    let fullWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    let showTaskForm = false;
+    let isEditingTask = false;
+    let formPosition = { x: 0, y: 0 };
+    let taskFormData = {
+        id: null,
+        title: '',
+        date: formatDateForInput(new Date()),
+        time: formatTimeForInput(new Date()),
+        endTime: formatTimeForInput(new Date(new Date().setHours(new Date().getHours() + 1))),
+        color: 'bg-pink-500'
+    };
+
+    const colorOptions = [
+        { value: 'bg-pink-500', label: 'Pink' },
+        { value: 'bg-purple-500', label: 'Purple' },
+        { value: 'bg-cyan-500', label: 'Cyan' },
+        { value: 'bg-orange-500', label: 'Orange' },
+        { value: 'bg-green-500', label: 'Green' },
+        { value: 'bg-yellow-500', label: 'Yellow' }
+    ];
+
+    function generateWeekViewDays() {
+        weekViewDays = [];
+        const baseDate = new Date(currentDate);
+        const dayOfWeek = baseDate.getDay();
+        const firstDayOfWeek = new Date(baseDate);
+        firstDayOfWeek.setDate(baseDate.getDate() - dayOfWeek);
+
+        for (let i = 0; i < 7; i++) {
+            const day = new Date(firstDayOfWeek);
+            day.setDate(firstDayOfWeek.getDate() + i);
+            weekViewDays.push({
+                day: day.getDate(),
+                weekday: fullWeekdays[i],
+                shortWeekday: weekdays[i],
+                date: day,
+                today: day.getDate() === new Date().getDate() &&
+                    day.getMonth() === new Date().getMonth() &&
+                    day.getFullYear() === new Date().getFullYear(),
+                currentMonthDisplay: day.getMonth() === currentMonth
+            });
+        }
+    }
+
+    function generateTimeSlots() {
+        timeSlots = [];
+        const startHour = showFullTimeRange ? 0 : 4;
+        const endHour = showFullTimeRange ? 24 : 22;
+        for (let hour = startHour; hour < endHour; hour++) {
+            for (let minute = 0; minute < 60; minute += 5) {
+                timeSlots.push({
+                    hour,
+                    minute,
+                    time: `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`,
+                    isHourStart: minute === 0,
+                    isHalfHour: minute === 30
+                });
+            }
+        }
+    }
+
+    function navigatePrevious() {
+        const newDate = new Date(weekViewDays[0].date);
+        newDate.setDate(newDate.getDate() - 7);
+        currentDate = new Date(newDate);
+        currentMonth = currentDate.getMonth();
+        currentYear = currentDate.getFullYear();
+        generateWeekViewDays();
+    }
+
+    function navigateNext() {
+        const newDate = new Date(weekViewDays[6].date);
+        newDate.setDate(newDate.getDate() + 1);
+        currentDate = new Date(newDate);
+        currentMonth = currentDate.getMonth();
+        currentYear = currentDate.getFullYear();
+        generateWeekViewDays();
+    }
+
+    function shouldDisplayEvent(event, day, timeSlot) {
+        const eventDate = event.date;
+        if (eventDate.getDate() !== day.date.getDate() ||
+            eventDate.getMonth() !== day.date.getMonth() ||
+            eventDate.getFullYear() !== day.date.getFullYear()) {
+            return false;
+        }
+        const slotTime = timeSlot.hour * 60 + timeSlot.minute;
+        const eventStartTime = eventDate.getHours() * 60 + eventDate.getMinutes();
+        return slotTime === eventStartTime;
+    }
+
+    function getEventHeight(event) {
+        const startTime = event.date.getHours() * 60 + event.date.getMinutes();
+        const endTime = event.endDate.getHours() * 60 + event.endDate.getMinutes();
+        const durationMinutes = endTime - startTime;
+        return Math.max(6, (durationMinutes / 5) * 6);
+    }
+
+    function startDrag(eventData) {
+        draggedEvent = eventData;
+        draggedEventOriginalTime = {
+            date: new Date(eventData.date),
+            endDate: new Date(eventData.endDate)
+        };
+    }
+
+    function dropEvent(day, timeSlot) {
+        if (!draggedEvent) return;
+        const originalEvent = events.find(e => e.id === draggedEvent.id);
+        if (!originalEvent) return;
+
+        const duration = (originalEvent.endDate.getTime() - originalEvent.date.getTime()) / 60000;
+        const newDate = new Date(day.date);
+        newDate.setHours(timeSlot.hour);
+        newDate.setMinutes(timeSlot.minute);
+        newDate.setSeconds(0);
+        newDate.setMilliseconds(0);
+
+        const newEndDate = new Date(newDate);
+        newEndDate.setMinutes(newDate.getMinutes() + duration);
+
+        originalEvent.date = newDate;
+        originalEvent.endDate = newEndDate;
+        draggedEvent = null;
+        draggedEventOriginalTime = null;
+        events = [...events];
+    }
+
+    function cancelDrag() {
+        if (!draggedEvent || !draggedEventOriginalTime) return;
+        const originalEvent = events.find(e => e.id === draggedEvent.id);
+        if (originalEvent) {
+            originalEvent.date = draggedEventOriginalTime.date;
+            originalEvent.endDate = draggedEventOriginalTime.endDate;
+            events = [...events];
+        }
+        draggedEvent = null;
+        draggedEventOriginalTime = null;
+    }
+
+    function formatTime(date) {
         const hours = date.getHours();
         const minutes = date.getMinutes();
         return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
     }
 
-    // --- Svelte 5 State ---
-    let initialDate = new Date();
-    let currentMonth = $state(initialDate.getMonth());
-    let currentYear = $state(initialDate.getFullYear());
-    let currentView = $state('Month'); // 'Month' or 'Week'
-    let viewDropdownOpen = $state(false);
-    let viewDropdownRef = $state<HTMLElement | null>(null); // Ref for dropdown
-    let popoverRef = $state<HTMLElement | null>(null); // Ref for popover
+    function formatDateForInput(date) {
+        const year = date.getFullYear();
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const dayNum = date.getDate().toString().padStart(2, '0');
+        return `${year}-${month}-${dayNum}`;
+    }
 
-    // --- Event Colors ---
-    const availableColors = $state([
-        { name: 'Indigo', class: 'bg-indigo-500', hoverClass: 'bg-indigo-600', textClass: 'text-indigo-50' },
-        { name: 'Red', class: 'bg-red-500', hoverClass: 'bg-red-600', textClass: 'text-red-50' },
-        { name: 'Green', class: 'bg-green-500', hoverClass: 'bg-green-600', textClass: 'text-green-50' },
-        { name: 'Amber', class: 'bg-amber-500', hoverClass: 'bg-amber-600', textClass: 'text-amber-50' },
-        { name: 'Purple', class: 'bg-purple-500', hoverClass: 'bg-purple-600', textClass: 'text-purple-50' },
-        { name: 'Pink', class: 'bg-pink-500', hoverClass: 'bg-pink-600', textClass: 'text-pink-50' },
-    ]);
+    function formatTimeForInput(date) {
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        return `${hours}:${minutes}`;
+    }
 
-    // --- Sample Events/Tasks Data ---
-    let events = $state([
-        {
-            id: 1,
-            title: 'Team Meeting',
-            date: new Date(initialDate.getFullYear(), initialDate.getMonth(), 15, 10, 0),
-            endDate: new Date(initialDate.getFullYear(), initialDate.getMonth(), 15, 11, 30),
-            color: availableColors[0].class
-        },
-        {
-            id: 2,
-            title: 'Project Deadline',
-            date: new Date(initialDate.getFullYear(), initialDate.getMonth(), 22, 14, 0),
-            endDate: new Date(initialDate.getFullYear(), initialDate.getMonth(), 22, 15, 0),
-            color: availableColors[1].class
-        },
-        {
-            id: 3,
-            title: 'Client Call',
-            date: new Date(initialDate.getFullYear(), initialDate.getMonth(), 8, 9, 0),
-            endDate: new Date(initialDate.getFullYear(), initialDate.getMonth(), 8, 10, 0),
-            color: availableColors[2].class
-        }
-    ]);
-
-    // --- Event Popover State ---
-    let showEventPopover = $state(false);
-    let popoverPosition = $state({ top: '0px', left: '0px' });
-    let editingEvent = $state(null as {
-        id?: number;
-        title: string;
-        eventDate: Date; // Keep the original date of the cell/event
-        startTime: string;
-        duration: number; // in minutes
-        color: string;
-        isNew: boolean;
-    } | null);
-    let selectedEventColor = $state(availableColors[0]);
-
-    // --- Calendar Constants ---
-    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
-    // --- Derived State for Calendar Days ---
-    const calendarDays = $derived(() => {
-        const daysArray: Array<{ day: number; isCurrentMonth: boolean; isToday?: boolean; date: Date }> = [];
-        const firstDayOfMonth = new Date(currentYear, currentMonth, 1);
-        const startingDayOfWeek = firstDayOfMonth.getDay(); // 0 = Sunday
-
-        const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
-        const totalDaysInMonth = lastDayOfMonth.getDate();
-
-        const prevMonthLastDay = new Date(currentYear, currentMonth, 0).getDate();
-
-        // Days from previous month
-        for (let i = startingDayOfWeek - 1; i >= 0; i--) {
-            daysArray.push({
-                day: prevMonthLastDay - i,
-                isCurrentMonth: false,
-                date: new Date(currentYear, currentMonth - 1, prevMonthLastDay - i)
-            });
-        }
-
-        // Days from current month
-        const today = new Date();
-        for (let i = 1; i <= totalDaysInMonth; i++) {
-            const date = new Date(currentYear, currentMonth, i);
-            daysArray.push({
-                day: i,
-                isCurrentMonth: true,
-                isToday: date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear(),
-                date: date
-            });
-        }
-
-        // Days from next month (to fill 6 rows, 42 cells total)
-        const cellsSoFar = daysArray.length;
-        // Ensure we always have 6 weeks (42 cells) for consistent layout
-        const totalCellsTarget = 42;
-
-        for (let i = 1; i <= totalCellsTarget - cellsSoFar; i++) {
-            daysArray.push({
-                day: i,
-                isCurrentMonth: false,
-                date: new Date(currentYear, currentMonth + 1, i)
-            });
-        }
-        return daysArray;
-    });
-
-    // --- Navigation Functions ---
-    function prevMonth() {
-        if (currentMonth === 0) {
-            currentMonth = 11;
-            currentYear--;
+    function _calculateFormPosition(domEvent) {
+        if (domEvent) {
+            formPosition = { x: domEvent.clientX, y: domEvent.clientY };
         } else {
-            currentMonth--;
+            formPosition = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
         }
-        closePopover(); // Close popover if open during navigation
     }
 
-    function nextMonth() {
-        if (currentMonth === 11) {
-            currentMonth = 0;
-            currentYear++;
-        } else {
-            currentMonth++;
-        }
-        closePopover(); // Close popover if open during navigation
-    }
+    function openNewTaskForm(day = null, timeSlot = null, domEvent = null) {
+        isEditingTask = false;
+        _calculateFormPosition(domEvent);
 
-    function goToToday() {
-        const today = new Date();
-        currentMonth = today.getMonth();
-        currentYear = today.getFullYear();
-        closePopover(); // Close popover if open during navigation
-    }
+        let defaultDate = new Date();
+        let defaultTime = new Date();
+        let defaultEndTime = new Date(defaultTime);
+        defaultEndTime.setHours(defaultEndTime.getHours() + 1);
 
-    // --- Event Handling Functions ---
-    function getEventsForDay(date: Date) {
-        return events.filter(event =>
-            event.date.getDate() === date.getDate() &&
-            event.date.getMonth() === date.getMonth() &&
-            event.date.getFullYear() === date.getFullYear()
-        ).sort((a, b) => a.date.getTime() - b.date.getTime());
-    }
-
-    function handleDayClick(dayDate: Date, domEvent: MouseEvent) {
-        if ((domEvent.target as HTMLElement).closest('.event-bubble')) {
-            return; // Don't open for new event if clicking on an existing event
+        if (day && day.date) {
+            defaultDate = new Date(day.date);
         }
 
-        // Adjust popover position to be slightly offset from cursor
-        // This prevents the cursor from obscuring the popover's edge
-        const rect = (domEvent.currentTarget as HTMLElement).getBoundingClientRect();
-        const clickY = domEvent.clientY - rect.top; // Y relative to cell
-        const clickX = domEvent.clientX - rect.left; // X relative to cell
+        if (timeSlot) {
+            defaultTime = new Date(defaultDate);
+            defaultTime.setHours(timeSlot.hour);
+            defaultTime.setMinutes(timeSlot.minute);
+            defaultEndTime = new Date(defaultTime);
+            defaultEndTime.setHours(defaultEndTime.getHours() + 1);
+        } else if (day && day.date) {
+            defaultTime = new Date(day.date);
+            defaultTime.setHours(new Date().getHours());
+            defaultTime.setMinutes(new Date().getMinutes());
+            defaultEndTime = new Date(defaultTime);
+            defaultEndTime.setHours(defaultEndTime.getHours() + 1);
+        }
 
-        // Position relative to viewport
-        popoverPosition = { top: `${domEvent.clientY + 5}px`, left: `${domEvent.clientX + 5}px` };
-
-        const now = new Date();
-        editingEvent = {
-            id: undefined,
+        taskFormData = {
+            id: null,
             title: '',
-            eventDate: dayDate,
-            startTime: formatTime(now),
-            duration: 60,
-            color: availableColors[0].class,
-            isNew: true
+            date: formatDateForInput(defaultDate),
+            time: formatTimeForInput(defaultTime),
+            endTime: formatTimeForInput(defaultEndTime),
+            color: 'bg-pink-500'
         };
-        selectedEventColor = availableColors.find(c => c.class === editingEvent.color) || availableColors[0];
-        showEventPopover = true;
+        showTaskForm = true;
     }
 
-    function handleEventClick(eventItem, domEvent: MouseEvent) {
-        domEvent.stopPropagation(); // Prevent day click which would open a new event form
+    function openEditTaskForm(eventItem, domEvent) {
+        isEditingTask = true;
+        _calculateFormPosition(domEvent);
 
-        popoverPosition = { top: `${domEvent.clientY + 5}px`, left: `${domEvent.clientX + 5}px` };
-
-        editingEvent = {
+        taskFormData = {
             id: eventItem.id,
             title: eventItem.title,
-            eventDate: new Date(eventItem.date),
-            startTime: formatTime(new Date(eventItem.date)),
-            duration: (new Date(eventItem.endDate).getTime() - new Date(eventItem.date).getTime()) / 60000,
-            color: eventItem.color,
-            isNew: false
+            date: formatDateForInput(eventItem.date),
+            time: formatTimeForInput(eventItem.date),
+            endTime: formatTimeForInput(eventItem.endDate),
+            color: eventItem.color
         };
-        selectedEventColor = availableColors.find(c => c.class === editingEvent.color) || availableColors[0];
-        showEventPopover = true;
+        showTaskForm = true;
     }
 
-    function saveEvent() {
-        if (!editingEvent || !editingEvent.title.trim()) {
-            // Consider a more user-friendly notification than alert
-            console.warn("Event title cannot be empty.");
-            return;
-        }
+    function closeTaskForm() {
+        showTaskForm = false;
+        taskFormData = { id: null, title: '', date: '', time: '', endTime: '', color: 'bg-pink-500' };
+    }
 
-        const [hours, minutes] = editingEvent.startTime.split(':').map(Number);
-        const startDate = new Date(editingEvent.eventDate);
-        startDate.setHours(hours, minutes, 0, 0);
+    function handleSubmitTaskForm() {
+        if (taskFormData.title.trim() === '') return;
 
-        const endDate = new Date(startDate.getTime() + editingEvent.duration * 60000);
+        const [year, month, day] = taskFormData.date.split('-').map(Number);
+        const [startHours, startMinutes] = taskFormData.time.split(':').map(Number);
+        const [endHours, endMinutes] = taskFormData.endTime.split(':').map(Number);
 
-        if (editingEvent.isNew) {
-            events = [...events, {
-                id: Date.now(),
-                title: editingEvent.title,
-                date: startDate,
-                endDate: endDate,
-                color: selectedEventColor.class
-            }];
-        } else {
-            const index = events.findIndex(e => e.id === editingEvent.id);
-            if (index !== -1) {
-                events[index] = {
-                    ...events[index],
-                    title: editingEvent.title,
-                    date: startDate,
-                    endDate: endDate,
-                    color: selectedEventColor.class
+        const taskDate = new Date(year, month - 1, day, startHours, startMinutes);
+        const taskEndDate = new Date(year, month - 1, day, endHours, endMinutes);
+
+        if (isEditingTask && taskFormData.id !== null) {
+            const eventIndex = events.findIndex(e => e.id === taskFormData.id);
+            if (eventIndex > -1) {
+                events[eventIndex] = {
+                    ...events[eventIndex],
+                    title: taskFormData.title,
+                    date: taskDate,
+                    endDate: taskEndDate,
+                    color: taskFormData.color
                 };
                 events = [...events];
             }
+        } else {
+            const newId = events.length > 0 ? Math.max(...events.map(e => e.id)) + 1 : 1;
+            events = [...events, {
+                id: newId,
+                title: taskFormData.title,
+                date: taskDate,
+                endDate: taskEndDate,
+                color: taskFormData.color
+            }];
         }
-        closePopover();
+        closeTaskForm();
     }
 
-    function deleteEvent() {
-        if (editingEvent && !editingEvent.isNew) {
-            events = events.filter(e => e.id !== editingEvent.id);
-            closePopover();
-        }
+    function handleDeleteTask() {
+        if (!isEditingTask || taskFormData.id === null) return;
+        events = events.filter(e => e.id !== taskFormData.id);
+        closeTaskForm();
     }
 
-    function closePopover() {
-        showEventPopover = false;
-        // editingEvent = null; // Clearing this immediately might cause issues if popover has transitions
-    }
 
-    function selectColor(color) {
-        selectedEventColor = color;
-        if(editingEvent) editingEvent.color = color.class;
-    }
-
-    // Effect for handling click outside for both dropdown and popover
-    $effect(() => {
-        function handleClickOutside(event: MouseEvent) {
-            // Dropdown
-            if (viewDropdownOpen && viewDropdownRef && !viewDropdownRef.contains(event.target as Node)) {
-                viewDropdownOpen = false;
-            }
-            // Popover
-            if (showEventPopover && popoverRef && !popoverRef.contains(event.target as Node)) {
-                // Check if the click is on a calendar day cell or event bubble, which might open a new popover
-                const targetElement = event.target as HTMLElement;
-                const isCalendarInteractiveElement = targetElement.closest('.calendar-day-cell, .event-bubble');
-                if (!isCalendarInteractiveElement) {
-                    closePopover();
-                }
+    function handleDocumentClick(event) {
+        if (draggedEvent && !event.target.closest('.calendar-event')) {
+            if (!event.target.closest('.fixed.inset-0.z-50')) {
+                cancelDrag();
             }
         }
+    }
 
-        if (viewDropdownOpen || showEventPopover) {
-            // Add listener in capture phase to intercept clicks earlier
-            document.addEventListener('click', handleClickOutside, true);
-        }
-
-        return () => {
-            document.removeEventListener('click', handleClickOutside, true);
-        };
+    onMount(() => {
+        generateWeekViewDays();
+        generateTimeSlots();
+        document.addEventListener('click', handleDocumentClick);
+        return () => document.removeEventListener('click', handleDocumentClick);
     });
-
 </script>
 
-<div class="p-2 sm:p-3 md:p-4 h-full flex flex-col bg-slate-50">
-    <div class="mb-3 flex flex-col sm:flex-row justify-between items-start sm:items-center">
-        <div>
-            <h1 class="text-xl sm:text-2xl font-bold text-slate-800">{monthNames[currentMonth]} {currentYear}</h1>
-            <p class="text-xs text-slate-500 mt-0.5">Your compact event manager</p>
-        </div>
-
-        <div class="flex items-center space-x-1 sm:space-x-2 mt-2 sm:mt-0">
-            <button
-                    title="Today"
-                    on:click={goToToday}
-                    class="p-1.5 sm:p-2 hover:bg-slate-200 text-slate-600 rounded-md transition-colors duration-150">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-            </button>
-            <div class="relative" bind:this={viewDropdownRef}> {/* Bind ref for dropdown container */}
+<div class="h-full flex flex-col rounded-lg text-gray-200">
+    <div class="flex items-center justify-between w-full mb-3 p-3 bg-gray-800 rounded-lg shadow-md border border-gray-700/60">
+        <div class="flex items-center">
+            <div class="flex items-center">
                 <button
-                        on:click={() => viewDropdownOpen = !viewDropdownOpen}
-                        class="px-2 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm bg-white hover:bg-slate-100 text-slate-700 font-medium rounded-md shadow-sm border border-slate-200 transition-colors duration-150 flex items-center">
-                    {currentView}
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 sm:h-4 sm:w-4 ml-1 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                        on:click={navigatePrevious}
+                        class="p-1.5 hover:bg-gray-700/80 text-teal-400 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-teal-500/70"
+                        aria-label="Previous week">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
                     </svg>
                 </button>
-                {#if viewDropdownOpen}
-                    <div class="origin-top-right absolute right-0 mt-1 w-32 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20">
-                        <div class="py-1">
-                            <a href="#" on:click|preventDefault={() => { currentView = 'Month'; viewDropdownOpen = false; }} class="block px-3 py-1.5 text-xs sm:text-sm text-slate-700 hover:bg-slate-100">Month</a>
-                            <a href="#" on:click|preventDefault={() => { viewDropdownOpen = false; console.log('Week view coming soon!'); }} class="block px-3 py-1.5 text-xs sm:text-sm text-slate-700 hover:bg-slate-100">Week <span class="text-slate-400 text-[10px]">(soon)</span></a>
-                        </div>
-                    </div>
-                {/if}
+                <button
+                        on:click={navigateNext}
+                        class="p-1.5 hover:bg-gray-700/80 text-teal-400 rounded-full transition-colors duration-200 ml-1 focus:outline-none focus:ring-2 focus:ring-teal-500/70"
+                        aria-label="Next week">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
+                </button>
             </div>
-            <button
-                    title="Previous Month"
-                    on:click={prevMonth}
-                    class="p-1.5 sm:p-2 hover:bg-slate-200 text-slate-600 rounded-md transition-colors duration-150">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-                </svg>
-            </button>
-            <button
-                    title="Next Month"
-                    on:click={nextMonth}
-                    class="p-1.5 sm:p-2 hover:bg-slate-200 text-slate-600 rounded-md transition-colors duration-150">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-            </button>
+            <p class="text-sm font-semibold text-gray-200 ml-4">
+                {#if weekViewDays && weekViewDays.length > 0}
+                    {weekViewDays[0]?.date.toLocaleDateString('en-US', {month: 'short', day: 'numeric'})} - {weekViewDays[6]?.date.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'})}
+                {/if}
+            </p>
         </div>
+        <button
+                on:click={(event) => openNewTaskForm(null, null, event)}
+                class="bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-600 hover:to-cyan-600 text-white font-semibold py-2 px-4 rounded-full shadow-md hover:shadow-lg transition-all duration-200 flex items-center text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-cyan-400">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            Add Task
+        </button>
     </div>
 
-    {#if showEventPopover && editingEvent}
-        <div
-                bind:this={popoverRef} class="absolute bg-white rounded-lg shadow-xl p-3 sm:p-4 w-64 sm:w-72 z-40 border border-slate-200"
-                style="top: {popoverPosition.top}; left: {popoverPosition.left}; transform: translate(-10px, 10px);"
-                on:click|stopPropagation> {/* Prevents click inside from closing it via the global listener */}
-
-            <h3 class="text-md font-semibold text-slate-800 mb-3">{editingEvent.isNew ? 'Add Event' : 'Edit Event'}</h3>
-
-            <div class="space-y-3">
-                <div>
-                    <label for="event-title-popover" class="block text-xs font-medium text-slate-600 mb-0.5">Title</label>
-                    <input
-                            type="text"
-                            id="event-title-popover"
-                            bind:value={editingEvent.title}
-                            class="w-full px-2 py-1.5 border border-slate-300 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
-                            placeholder="Event title"
-                    />
+    {#if showTaskForm}
+        <div class="fixed inset-0 z-50 bg-transparent flex items-center justify-center" on:click|self={closeTaskForm}>
+            <div
+                    class="bg-gray-800 rounded-2xl shadow-2xl p-6 max-w-md w-full animate-scale-in border border-gray-600"
+                    style="position: absolute; left: {Math.min(Math.max(formPosition.x - (448/2), 20), (typeof window !== 'undefined' ? window.innerWidth : 1024) - 448 - 20)}px; top: {Math.min(Math.max(formPosition.y - 200, 20), (typeof window !== 'undefined' ? window.innerHeight : 768) - 520)}px;"
+                    on:click|stopPropagation>
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-semibold text-teal-400">{isEditingTask ? 'Edit Task' : 'Add New Task'}</h2>
+                    <button
+                            on:click={closeTaskForm}
+                            class="text-gray-500 hover:text-gray-300 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
                 </div>
-
-                <div class="grid grid-cols-2 gap-2">
+                <form on:submit|preventDefault={handleSubmitTaskForm} class="space-y-5">
                     <div>
-                        <label for="event-time-popover" class="block text-xs font-medium text-slate-600 mb-0.5">Time</label>
-                        <input
-                                type="time"
-                                id="event-time-popover"
-                                bind:value={editingEvent.startTime}
-                                class="w-full px-2 py-1.5 border border-slate-300 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
-                        />
+                        <label for="title" class="block text-sm font-medium text-teal-400/90 mb-1.5">Task Title</label>
+                        <input type="text" id="title" bind:value={taskFormData.title} class="w-full px-3.5 py-2.5 bg-gray-700/70 border border-gray-600 text-gray-100 placeholder-gray-400/70 rounded-lg focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/60 transition-colors duration-150" placeholder="Enter task title" required />
                     </div>
                     <div>
-                        <label for="event-duration-popover" class="block text-xs font-medium text-slate-600 mb-0.5">Duration (min)</label>
-                        <input
-                                type="number"
-                                id="event-duration-popover"
-                                bind:value={editingEvent.duration}
-                                min="15"
-                                step="15"
-                                class="w-full px-2 py-1.5 border border-slate-300 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
-                        />
+                        <label for="date" class="block text-sm font-medium text-teal-400/90 mb-1.5">Date</label>
+                        <input type="date" id="date" bind:value={taskFormData.date} class="w-full px-3.5 py-2.5 bg-gray-700/70 border border-gray-600 text-gray-100 placeholder-gray-400/70 rounded-lg focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/60 transition-colors duration-150" required />
                     </div>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-medium text-slate-600 mb-1">Color</label>
-                    <div class="flex flex-wrap gap-1.5">
-                        {#each availableColors as colorOption (colorOption.class)}
-                            <button
-                                    title={colorOption.name}
-                                    on:click={() => selectColor(colorOption)}
-                                    class="w-5 h-5 sm:w-6 sm:h-6 rounded-full transition-all duration-150 {colorOption.class} {colorOption.hoverClass} focus:outline-none"
-                                    class:ring-2={selectedEventColor.class === colorOption.class}
-                                    class:ring-offset-1={selectedEventColor.class === colorOption.class}
-                                    class:ring-slate-500={selectedEventColor.class === colorOption.class}
-                            >
-                            </button>
-                        {/each}
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label for="time" class="block text-sm font-medium text-teal-400/90 mb-1.5">Start Time</label>
+                            <input type="time" id="time" bind:value={taskFormData.time} class="w-full px-3.5 py-2.5 bg-gray-700/70 border border-gray-600 text-gray-100 placeholder-gray-400/70 rounded-lg focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/60 transition-colors duration-150" required />
+                        </div>
+                        <div>
+                            <label for="endTime" class="block text-sm font-medium text-teal-400/90 mb-1.5">End Time</label>
+                            <input type="time" id="endTime" bind:value={taskFormData.endTime} class="w-full px-3.5 py-2.5 bg-gray-700/70 border border-gray-600 text-gray-100 placeholder-gray-400/70 rounded-lg focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/60 transition-colors duration-150" required />
+                        </div>
                     </div>
-                </div>
-            </div>
-
-            <div class="mt-4 pt-3 border-t border-slate-200 flex justify-between items-center">
-                {#if !editingEvent.isNew}
-                    <button
-                            on:click={deleteEvent}
-                            class="px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded-md transition-colors duration-150 font-medium">
-                        Delete
-                    </button>
-                {:else}
-                    <div></div> {/if}
-                <div class="flex space-x-2">
-                    <button
-                            on:click={closePopover}
-                            class="px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 rounded-md transition-colors duration-150 font-medium">
-                        Cancel
-                    </button>
-                    <button
-                            on:click={saveEvent}
-                            class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded-md transition-colors duration-150 font-semibold">
-                        {editingEvent.isNew ? 'Add Event' : 'Save Changes'}
-                    </button>
-                </div>
+                    <div>
+                        <label class="block text-sm font-medium text-teal-400/90 mb-2">Color</label>
+                        <div class="flex space-x-2">
+                            {#each colorOptions as color}
+                                <button type="button" class="w-8 h-8 rounded-full {color.value} border-2 transition-all duration-200 flex items-center justify-center {taskFormData.color === color.value ? 'border-teal-300 scale-110 shadow-lg' : 'border-gray-600/70 hover:border-gray-500'}" on:click={() => taskFormData.color = color.value} title={color.label}>
+                                    {#if taskFormData.color === color.value}
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                                    {/if}
+                                </button>
+                            {/each}
+                        </div>
+                    </div>
+                    <div class="flex justify-end space-x-3 pt-3">
+                        {#if isEditingTask}
+                            <button type="button" on:click={handleDeleteTask} class="px-4 py-2 border border-red-500/70 text-red-400/90 rounded-lg hover:bg-red-600/70 hover:text-red-100 transition-colors duration-200 mr-auto font-medium">Delete</button>
+                        {/if}
+                        <button type="button" on:click={closeTaskForm} class="px-4 py-2 border border-gray-600/80 text-gray-300 rounded-lg hover:bg-gray-700/70 hover:text-gray-100 transition-colors duration-200 font-medium">Cancel</button>
+                        <button type="submit" class="px-4 py-2 bg-gradient-to-r from-teal-500 to-cyan-500 text-white rounded-lg hover:from-teal-600 hover:to-cyan-600 transition-all duration-200 font-semibold shadow-md hover:shadow-lg">
+                            {isEditingTask ? 'Update Task' : 'Add Task'}
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
     {/if}
 
-    <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden flex-grow flex flex-col">
-        <div class="grid grid-cols-7 bg-slate-100 border-b border-slate-200">
-            {#each weekdays as day}
-                <div class="p-1.5 text-center text-xs font-medium text-slate-600">{day}</div>
+    <div class="flex-grow bg-gray-800/95 rounded-lg shadow-lg border border-gray-700/50 overflow-hidden flex flex-col min-h-0">
+        <div class="grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))] bg-gray-700 text-teal-400/90 sticky top-0 z-10 shadow">
+            <div class="p-2.5 text-center text-xs font-semibold border-r border-gray-600/70">Time</div>
+            {#each weekViewDays as day}
+                <div class="p-2.5 text-center border-r border-gray-600/70 last:border-r-0">
+                    <div class="text-xs font-semibold tracking-wide">{day.shortWeekday.toUpperCase()}</div>
+                    <div class="text-sm font-bold mt-1 {day.today ? 'bg-teal-500 text-gray-900 rounded-full w-6 h-6 flex items-center justify-center mx-auto' : 'text-gray-300'}">{day.day}</div>
+                </div>
             {/each}
         </div>
 
-        <div class="grid grid-cols-7 grid-rows-[repeat(6,minmax(0,1fr))] flex-grow">
-            {#each calendarDays as dayItem (dayItem.date.toISOString())}
-                <div
-                        class="calendar-day-cell min-h-[70px] sm:min-h-[80px] p-0.5 sm:p-1 border-b border-r border-slate-100 relative transition-colors duration-100
-                           {dayItem.isCurrentMonth ? 'bg-white hover:bg-slate-50' : 'bg-slate-50 hover:bg-slate-100'}
-                           {dayItem.isToday ? 'ring-1 ring-indigo-400 ring-inset z-10' : ''}"
-                        on:click={(e) => handleDayClick(dayItem.date, e)}
-                >
-                    <div class="text-[10px] sm:text-xs font-medium mb-0.5 flex items-center justify-center
-                                {dayItem.isCurrentMonth ? 'text-slate-700' : 'text-slate-400'}
-                                {dayItem.isToday ? 'bg-indigo-500 text-white rounded-full w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center leading-none' : 'w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center'}">
-                        {dayItem.day}
-                    </div>
-
-                    {#if dayItem.isCurrentMonth || getEventsForDay(dayItem.date).length > 0}
-                        <div class="mt-0.5 space-y-0.5 overflow-y-auto max-h-[50px] sm:max-h-[60px] custom-scrollbar">
-                            {#each getEventsForDay(dayItem.date) as event (event.id)}
-                                <div
-                                        class="event-bubble text-[9px] sm:text-[10px] px-1 py-0.5 rounded {event.color} {availableColors.find(c=>c.class === event.color)?.textClass || 'text-white'} truncate shadow-sm cursor-pointer hover:opacity-80"
-                                        on:click={(e) => handleEventClick(event, e)}
-                                        title="{formatTime(event.date)} - {formatTime(event.endDate)}: {event.title}"
-                                >
-                                    <span class="font-semibold">{formatTime(event.date)}</span> {event.title}
-                                </div>
-                            {/each}
-                        </div>
-                    {/if}
+        <div class="flex-grow relative calendar overflow-y-auto min-h-0">
+            <div class="grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]" style="height: {timeSlots.length * 6}px;">
+                <div class="border-r border-gray-700/50">
+                    {#each timeSlots as slot}
+                        {#if slot.isHourStart}
+                            <div class="h-[6px] flex items-start justify-end pr-1.5 text-xs text-gray-400 font-medium border-t border-gray-700/50 pt-0.5">
+                                {slot.hour === 0 ? '12am' : slot.hour === 12 ? '12pm' : slot.hour > 12 ? `${slot.hour - 12}pm` : `${slot.hour}am`}
+                            </div>
+                        {:else if slot.isHalfHour}
+                            <div class="h-[6px] border-t border-gray-600/50"></div>
+                        {:else}
+                            <div class="h-[6px]"></div>
+                        {/if}
+                    {/each}
                 </div>
-            {/each}
+
+                {#each weekViewDays as day, dayIndex}
+                    <div class="relative border-r border-gray-700/50 last:border-r-0 {day.today ? 'bg-teal-600/10' : ''}">
+                        {#each timeSlots as slot, slotIndex}
+                            <div
+                                    class="h-[6px] {slot.isHourStart ? 'border-t border-gray-700/50' : slot.isHalfHour ? 'border-t border-gray-600/50' : ''} hover:bg-teal-500/20 cursor-pointer transition-colors duration-100"
+                                    on:click={(event) => openNewTaskForm(day, slot, event)}
+                                    on:dragover|preventDefault
+                                    on:drop|preventDefault={() => dropEvent(day, slot)}
+                            ></div>
+                        {/each}
+
+                        {#each events as eventItem}
+                            {#if eventItem.date.getFullYear() === day.date.getFullYear() && eventItem.date.getMonth() === day.date.getMonth() && eventItem.date.getDate() === day.date.getDate()}
+                                {#each timeSlots as slot, slotIndex}
+                                    {#if shouldDisplayEvent(eventItem, day, slot)}
+                                        <div
+                                                class="absolute calendar-event {eventItem.color} text-white rounded-md p-1.5 text-xs shadow-lg overflow-hidden cursor-move border border-white/10"
+                                                style="top: {slotIndex * 6}px; left: 4px; right: 4px; height: {getEventHeight(eventItem)}px; z-index: 10;"
+                                                draggable="true"
+                                                on:dragstart={() => startDrag(eventItem)}
+                                                on:click={(domEvent) => { domEvent.stopPropagation(); openEditTaskForm(eventItem, domEvent); }}
+                                        >
+                                            <div class="font-semibold text-[11px] leading-tight mb-0.5">{formatTime(eventItem.date)} - {formatTime(eventItem.endDate)}</div>
+                                            <div class="truncate text-[10px] leading-tight opacity-90">{eventItem.title}</div>
+                                        </div>
+                                    {/if}
+                                {/each}
+                            {/if}
+                        {/each}
+                    </div>
+                {/each}
+            </div>
         </div>
     </div>
 </div>
 
 <style>
-    .custom-scrollbar::-webkit-scrollbar {
-        width: 4px;
+    @keyframes scale-in {
+        0% { transform: scale(0.95); opacity: 0; }
+        100% { transform: scale(1); opacity: 1; }
     }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-        background-color: #cbd5e1; /* slate-300 */
-        border-radius: 20px;
+    .animate-scale-in {
+        animation: scale-in 0.2s ease-out forwards;
     }
-    .custom-scrollbar::-webkit-scrollbar-track {
-        background-color: transparent;
+
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
     }
-    .grid > div:nth-child(7n) {
-        border-right: none;
+    ::-webkit-scrollbar-track {
+        background: #1f2937;
+        border-radius: 10px;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #4b5563;
+        border-radius: 10px;
+        border: 2px solid #1f2937;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #6b7280;
+    }
+
+    .calendar::-webkit-scrollbar {
+        display: none;
+    }
+
+
+    .calendar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+
+
+    input[type="date"]::-webkit-calendar-picker-indicator,
+    input[type="time"]::-webkit-calendar-picker-indicator {
+        filter: invert(0.8) brightness(100%) sepia(20%) saturate(5000%) hue-rotate(130deg);
     }
 </style>
