@@ -1,50 +1,94 @@
 <script lang="ts">
     import '../app.css'; // Ensure this path is correct
+    import { page } from '$app/stores';
+    import { goto } from '$app/navigation'; // Import goto for programmatic navigation
 
     let { children } = $props();
-    let sidebarOpen = $state(true);
-    let calendarDropdownOpen = $state(false);
+    let sidebarOpen = $state(true); // Left sidebar
+    let dashboardDropdownOpen = $state(false);
+    let aiPlannerSidebarOpen = $state(false); // Right sidebar for AI Planner
 
-    // Placeholder for active route logic, ideally from SvelteKit's $page store
-    let currentPath = '/dashboard'; // Default active path
+    // Use SvelteKit's $page store for active route logic
+    let currentPath = $derived($page.url.pathname);
 
-    const isCalendarPathActive = currentPath.startsWith('/calendar')
-    const settingsIsActive = currentPath === '/settings'
+    let isCalendarPathActive = $derived(currentPath.startsWith('/calendar'));
+    let isDashboardPathActive = $derived(currentPath.startsWith('/dashboard'));
+    let settingsIsActive = $derived(currentPath === '/settings');
 
+    // Removed Dashboard and AI Planner from mainNavItems
     const mainNavItems = [
-        { href: '/dashboard', label: 'Dashboard', icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v16.5h16.5M3.75 12h16.5m-16.5 5.25H12M5.25 5.25h5.25m-5.25 0V3" />', activePaths: ['/dashboard', '/'] },
         { href: '/tasks', label: 'Tasks', icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />', activePaths: ['/tasks'] },
-        { href: '/ai-planner', label: 'AI Planner', icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m1.5 0V5.25A2.25 2.25 0 017.5 3h5.25a2.25 2.25 0 012.25 2.25V18L9.75 12.75M8.25 3h7.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />', activePaths: ['/ai-planner'] },
         { href: '/inbox', label: 'Inbox', icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M21.75 9v.906a2.25 2.25 0 01-1.183 1.981l-6.478 3.488M2.25 9v.906a2.25 2.25 0 001.183 1.981l6.478 3.488m8.863-11.186a2.25 2.25 0 011.183 1.98l-6.478 3.488m-1.183-1.981l-6.478-3.488a2.25 2.25 0 01-1.183-1.98V5.25A2.25 2.25 0 014.5 3h15a2.25 2.25 0 012.25 2.25z" />', activePaths: ['/inbox'] }
     ];
 
-    const calendarSubItems = [
-        { href: '/calendar/month', label: 'Month View', activePaths: ['/calendar/month'] },
-        { href: '/calendar/week', label: 'Week View', activePaths: ['/calendar/week'] },
-        { href: '/calendar/day', label: 'Day View', activePaths: ['/calendar/day'] },
+    const dashboardSubItems = [
+        { href: '/dashboard/calendar', label: 'Compact Calendar', activePaths: ['/dashboard/calendar'] },
+        { href: '/dashboard/stats', label: 'Statistics', activePaths: ['/dashboard/stats'] },
+        { href: '/dashboard/reports', label: 'Reports', activePaths: ['/dashboard/reports'] },
     ];
 
-    function toggleSidebar() {
+    function toggleLeftSidebar() {
         sidebarOpen = !sidebarOpen;
         if (!sidebarOpen) {
-            calendarDropdownOpen = false;
+            dashboardDropdownOpen = false; // Close dashboard dropdown if left sidebar closes
+        }
+        // If AI planner sidebar is open, and user explicitly opens left, maybe close AI planner? Optional.
+        // if (sidebarOpen && aiPlannerSidebarOpen) {
+        //     aiPlannerSidebarOpen = false;
+        // }
+    }
+
+    function handleDashboardNavigationAndToggle() {
+        if (!currentPath.startsWith('/dashboard')) {
+            goto('/dashboard');
+        }
+        // Toggle dashboard dropdown logic
+        if (!sidebarOpen) { // If left sidebar is closed
+            sidebarOpen = true; // Open it
+            // Ensure AI planner is closed if we are opening dashboard through a closed left sidebar
+            if (aiPlannerSidebarOpen) aiPlannerSidebarOpen = false;
+            setTimeout(() => { dashboardDropdownOpen = !dashboardDropdownOpen; }, 200); // Then open dropdown
+        } else { // If left sidebar is open
+            // If AI planner is open, close it as we are focusing on dashboard
+            if (aiPlannerSidebarOpen) aiPlannerSidebarOpen = false;
+            dashboardDropdownOpen = !dashboardDropdownOpen; // Just toggle dropdown
         }
     }
 
-    function toggleCalendarDropdown() {
-        if (!sidebarOpen) {
-            sidebarOpen = true;
-            setTimeout(() => { calendarDropdownOpen = !calendarDropdownOpen; }, 200);
-        } else {
-            calendarDropdownOpen = !calendarDropdownOpen;
+    function toggleAiPlannerSidebar() {
+        aiPlannerSidebarOpen = !aiPlannerSidebarOpen;
+        if (aiPlannerSidebarOpen) {
+            sidebarOpen = false; // Minimize left sidebar
+            dashboardDropdownOpen = false; // Close dashboard dropdown
         }
+    }
+
+    // Generate breadcrumb segments from current path
+    let breadcrumbs = $derived(generateBreadcrumbs(currentPath));
+
+    function generateBreadcrumbs(path: string) {
+        if (!path || path === '/') return [{ label: 'Dashboard', path: '/' }]; // Default to Dashboard
+
+        const segments = path.split('/').filter(Boolean);
+        let result = [{ label: 'AuraPlan', path: '/' }]; // Root breadcrumb
+
+        let currentPathSegment = '';
+        segments.forEach((segment) => {
+            currentPathSegment += `/${segment}`;
+            const formattedSegment = segment
+                .split('-')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join(' ');
+            result.push({ label: formattedSegment, path: currentPathSegment });
+        });
+        return result;
     }
 
 </script>
 
-<div class="h-screen w-full bg-zinc-900 text-gray-300 flex antialiased">
+<div class="h-screen w-full bg-zinc-900 text-gray-300 flex अंतialised relative">
     <aside
-            class="relative flex flex-col h-full bg-zinc-800 shadow-xl transition-all duration-300 ease-in-out shrink-0"
+            class="relative flex flex-col h-full bg-zinc-800 shadow-xl transition-all duration-300 ease-in-out shrink-0 z-30"
             class:w-60={sidebarOpen}
             class:w-18={!sidebarOpen}
     >
@@ -66,6 +110,52 @@
 
         <nav class="flex-1 px-2.5 py-4 space-y-1 overflow-y-auto overflow-x-hidden">
             <ul>
+                <li class="relative">
+                    <button
+                            on:click={handleDashboardNavigationAndToggle}
+                            class="w-full group flex items-center justify-between py-2.5 rounded-md transition-colors duration-150
+                               {isDashboardPathActive ? 'text-white' : 'text-zinc-400 hover:text-gray-100 hover:bg-zinc-700'}
+                               {isDashboardPathActive && sidebarOpen ? 'bg-zinc-700' : ''}
+                               {sidebarOpen ? 'px-2 justify-start' : 'justify-center'}"
+                            title="Dashboard">
+                        <div class="flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" class:mr-3={sidebarOpen} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v16.5h16.5M3.75 12h16.5m-16.5 5.25H12M5.25 5.25h5.25m-5.25 0V3" />
+                            </svg>
+                            {#if sidebarOpen}
+                                <span class="text-sm font-medium whitespace-nowrap transition-opacity duration-200 ease-in-out" class:opacity-100={sidebarOpen} class:opacity-0={!sidebarOpen} class:delay-150={sidebarOpen}>Dashboard</span>
+                            {/if}
+                        </div>
+                        {#if sidebarOpen}
+                            <svg class="w-4 h-4 shrink-0 transform transition-transform duration-200" class:rotate-180={dashboardDropdownOpen && sidebarOpen} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                            </svg>
+                        {/if}
+                    </button>
+                    {#if !sidebarOpen}
+                        <span class="absolute left-full top-1/2 -translate-y-1/2 ml-2.5 px-2 py-1 w-auto min-w-max rounded-md shadow-md text-xs font-bold text-white bg-zinc-900/95 opacity-0 group-hover:opacity-100 transition-opacity duration-150 delay-100 z-50 pointer-events-none whitespace-nowrap">
+                            Dashboard
+                        </span>
+                    {/if}
+                    {#if sidebarOpen && dashboardDropdownOpen}
+                        <div class="overflow-hidden transition-all duration-300 ease-in-out" style="max-height: {dashboardDropdownOpen && sidebarOpen ? '500px' : '0px'};">
+                            <ul class="pt-1 pl-5 space-y-0.5">
+                                {#each dashboardSubItems as subItem}
+                                    {@const isSubActive = subItem.activePaths.includes(currentPath)}
+                                    <li>
+                                        <a href={subItem.href}
+                                           class="block px-2 py-1.5 text-sm rounded-md transition-colors duration-150
+                                              {isSubActive ? 'text-white bg-zinc-700' : 'text-zinc-400 hover:text-gray-100 hover:bg-zinc-700/70'}"
+                                        >
+                                            {subItem.label}
+                                        </a>
+                                    </li>
+                                {/each}
+                            </ul>
+                        </div>
+                    {/if}
+                </li>
+
                 {#each mainNavItems as item}
                     {@const isActive = item.activePaths.includes(currentPath)}
                     <li>
@@ -92,50 +182,29 @@
                         </a>
                     </li>
                 {/each}
-                <li class="relative">
-                    <button
-                            on:click={toggleCalendarDropdown}
-                            class="w-full group flex items-center justify-between py-2.5 rounded-md transition-colors duration-150
-                               {isCalendarPathActive ? 'text-white' : 'text-zinc-400 hover:text-gray-100 hover:bg-zinc-700'}
-                               {isCalendarPathActive && sidebarOpen ? 'bg-zinc-700' : ''}
-                               {sidebarOpen ? 'px-2 justify-start' : 'justify-center'}"
-                            title="Calendar">
-                        <div class="flex items-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" class:mr-3={sidebarOpen} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5m-9-3.75h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 2.25h.008v.008H12v-.008zM9.75 15h.008v.008H9.75V15zm0 2.25h.008v.008H9.75v-.008zM7.5 15h.008v.008H7.5V15zm0 2.25h.008v.008H7.5v-.008zm6.75-4.5h.008v.008h-.008v-.008zm0 2.25h.008v.008h-.008V15zm0 2.25h.008v.008h-.008v-.008zm2.25-4.5h.008v.008H16.5v-.008zm0 2.25h.008v.008H16.5V15z" />
-                            </svg>
-                            {#if sidebarOpen}
-                                <span class="text-sm font-medium whitespace-nowrap transition-opacity duration-200 ease-in-out" class:opacity-100={sidebarOpen} class:opacity-0={!sidebarOpen} class:delay-150={sidebarOpen}>Calendar</span>
-                            {/if}
-                        </div>
-                        {#if sidebarOpen}
-                            <svg class="w-4 h-4 shrink-0 transform transition-transform duration-200" class:rotate-180={calendarDropdownOpen && sidebarOpen} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
-                            </svg>
+
+                <li>
+                    <a href="/calendar"
+                       class="relative group flex items-center py-2.5 rounded-md transition-colors duration-150
+                              {isCalendarPathActive ? 'text-white' : 'text-zinc-400 hover:text-gray-100 hover:bg-zinc-700'}
+                              {isCalendarPathActive && sidebarOpen ? 'bg-zinc-700' : ''}
+                              {sidebarOpen ? 'px-2 justify-start' : 'justify-center'}"
+                       title="Calendar">
+                        {#if isCalendarPathActive && sidebarOpen}
+                            <span class="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 bg-green-500 rounded-r-full"></span>
                         {/if}
-                    </button>
-                    {#if !sidebarOpen}
-                        <span class="absolute left-full top-1/2 -translate-y-1/2 ml-2.5 px-2 py-1 w-auto min-w-max rounded-md shadow-md text-xs font-bold text-white bg-zinc-900/95 opacity-0 group-hover:opacity-100 transition-opacity duration-150 delay-100 z-50 pointer-events-none whitespace-nowrap">
-                            Calendar
-                        </span>
-                    {/if}
-                    {#if sidebarOpen}
-                        <div class="overflow-hidden transition-all duration-300 ease-in-out" style="max-height: {calendarDropdownOpen && sidebarOpen ? '500px' : '0px'};">
-                            <ul class="pt-1 pl-5 space-y-0.5">
-                                {#each calendarSubItems as subItem}
-                                    {@const isSubActive = subItem.activePaths.includes(currentPath)}
-                                    <li>
-                                        <a href={subItem.href}
-                                           class="block px-2 py-1.5 text-sm rounded-md transition-colors duration-150
-                                              {isSubActive ? 'text-white bg-zinc-700' : 'text-zinc-400 hover:text-gray-100 hover:bg-zinc-700/70'}"
-                                        >
-                                            {subItem.label}
-                                        </a>
-                                    </li>
-                                {/each}
-                            </ul>
-                        </div>
-                    {/if}
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" class:mr-3={sidebarOpen} fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
+                        </svg>
+                        {#if sidebarOpen}
+                            <span class="text-sm font-medium whitespace-nowrap transition-opacity duration-200 ease-in-out" class:opacity-100={sidebarOpen} class:opacity-0={!sidebarOpen} class:delay-150={sidebarOpen}>Calendar</span>
+                        {/if}
+                        {#if !sidebarOpen}
+                            <span class="absolute left-full ml-2.5 px-2 py-1 w-auto min-w-max rounded-md shadow-md text-xs font-bold text-white bg-zinc-900/95 opacity-0 group-hover:opacity-100 transition-opacity duration-150 delay-100 z-50 pointer-events-none whitespace-nowrap">
+                                Calendar
+                            </span>
+                        {/if}
+                    </a>
                 </li>
             </ul>
         </nav>
@@ -178,7 +247,7 @@
                 </a>
 
                 <button
-                        on:click={toggleSidebar}
+                        on:click={toggleLeftSidebar}
                         class="w-full py-2 bg-zinc-700/40 rounded-md shadow-sm hover:bg-zinc-700/70 transition-colors duration-150 flex items-center justify-center focus:outline-none focus:ring-1 focus:ring-green-500 focus:ring-opacity-75"
                         aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}>
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-zinc-400 group-hover:text-gray-100" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -194,11 +263,30 @@
     </aside>
 
     <div class="flex-1 flex flex-col overflow-hidden">
-        <header class="h-16 bg-zinc-800 border-b border-zinc-700 shrink-0 flex items-center justify-between px-4 sm:px-6">
+        <header class="h-16 bg-zinc-800 border-b border-zinc-700 shrink-0 flex items-center justify-between px-4 sm:px-6 z-20">
             <div class="flex items-center">
-                <p class="text-sm text-zinc-500">AuraPlan / <span class="text-gray-100 font-medium">Dashboard</span></p>
+                <div class="text-sm">
+                    {#each breadcrumbs as crumb, i}
+                        {#if i < breadcrumbs.length - 1}
+                            <a href={crumb.path} class="text-zinc-500 hover:text-zinc-300 transition-colors">{crumb.label}</a>
+                            <span class="text-zinc-500 mx-1.5">/</span>
+                        {:else}
+                            <span class="text-gray-100 font-medium">{crumb.label}</span>
+                        {/if}
+                    {/each}
+                </div>
             </div>
             <div class="flex items-center space-x-3 sm:space-x-4">
+                <button
+                        on:click={toggleAiPlannerSidebar}
+                        aria-label="AI Planner"
+                        title="AI Planner"
+                        class="p-1.5 text-zinc-400 hover:text-gray-100 hover:bg-zinc-700 rounded-full"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m1.5 0V5.25A2.25 2.25 0 017.5 3h5.25a2.25 2.25 0 012.25 2.25V18L9.75 12.75M8.25 3h7.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </button>
                 <span class="text-xs text-zinc-400 hidden sm:inline">AI Status: Idle</span>
                 <span class="px-2.5 py-1 text-xs font-medium text-green-300 bg-green-600/30 rounded-full flex items-center">
                     <svg class="w-2 h-2 text-green-300 mr-1.5" fill="currentColor" viewBox="0 0 8 8">
@@ -215,10 +303,30 @@
             </div>
         </header>
 
-        <main class="flex-1 overflow-x-hidden overflow-y-auto p-4 sm:p-6 bg-zinc-900">
+        <main class="flex-1 overflow-x-hidden overflow-y-auto p-0 bg-zinc-900">
             {@render children()}
         </main>
     </div>
+
+    <aside class="fixed top-0 h-full bg-zinc-800 shadow-xl z-40 transition-transform duration-300 ease-in-out border-l border-zinc-700"
+           class:translate-x-0={aiPlannerSidebarOpen}
+           class:translate-x-full={!aiPlannerSidebarOpen}
+           style="right: 0; width: 24rem;" >
+        <div class="flex flex-col h-full">
+            <div class="flex items-center justify-between shrink-0 px-4 h-16 border-b border-zinc-700">
+                <h3 class="text-lg font-semibold text-gray-100">AI Planner</h3>
+                <button on:click={toggleAiPlannerSidebar} aria-label="Close AI Planner" class="text-zinc-400 hover:text-gray-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 p-4 overflow-y-auto">
+                <p class="text-sm text-zinc-300">AI Planner content goes here...</p>
+                <p class="text-sm text-zinc-300 mt-2">You can build out the planner's interface within this sidebar.</p>
+            </div>
+        </div>
+    </aside>
 </div>
 
 <style>
