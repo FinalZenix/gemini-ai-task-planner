@@ -6,12 +6,14 @@
     import { browser } from '$app/environment';
     import { fly } from 'svelte/transition';
     import { user, signOut, authLoading, initAuth } from '$lib/stores/authStore';
+    import AIChat from '$lib/components/AIChat.svelte'; // Import AIChat
 
     let { children } = $props();
     let sidebarOpen = $state(true);
     let dashboardDropdownOpen = $state(false);
     let aiPlannerSidebarOpen = $state(false);
     let userDropdownOpen = $state(false);
+    let showChat = $state(false); // State for new AI Chat visibility
 
     let currentPath = $derived($page.url.pathname);
 
@@ -123,6 +125,10 @@
             result.push({ label: formattedSegment, path: currentPathSegment });
         });
         return result;
+    }
+
+    function toggleChat() { // Function to toggle new AI Chat
+        showChat = !showChat;
     }
 </script>
 
@@ -388,3 +394,32 @@
         white-space: nowrap;
     }
 </style>
+
+<!-- New AI Chat Popup -->
+{#if $user}
+<div class="fixed bottom-4 right-4 z-[100]"> <!-- Ensure high z-index -->
+    {#if showChat}
+    <div
+        transition:fly={{ y: 20, duration: 300 }}
+        class="w-96 h-[calc(100vh-10rem)] max-h-[550px] bg-zinc-800 rounded-lg shadow-2xl border border-zinc-700 flex flex-col mb-2"
+    >
+        <AIChat />
+    </div>
+    {/if}
+    <button
+        on:click={toggleChat}
+        class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-5 rounded-lg shadow-lg transition-all duration-150 ease-in-out flex items-center space-x-2"
+        aria-label={showChat ? 'Close AI Chat' : 'Open AI Chat'}
+        title={showChat ? 'Close AI Chat' : 'Open AI Chat'}
+    >
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            {#if showChat}
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+            {:else}
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            {/if}
+        </svg>
+        <span>{showChat ? 'Close Chat' : 'AI Chat'}</span>
+    </button>
+</div>
+{/if}

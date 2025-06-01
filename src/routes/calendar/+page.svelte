@@ -23,6 +23,7 @@
     let showGoToTodayButton = $state(false);
     let loading = $state(false);
     let error = $state('');
+    let copyStatusMessage = $state(''); // For feedback on JSON copy
 
     let weekViewDays = $state<Array<{ day: number; weekday: string; shortWeekday: string; date: Date; isToday: boolean }>>([]);
     let timeSlots = $state<Array<{ hour: number; minute: number; time: string; isHourStart: boolean; isHalfHour: boolean; isQuarterHour: boolean }>>([]);
@@ -930,6 +931,69 @@
             generateTimeSlots();
         }
     });
+
+    async function handleCopyCalendarJson() {
+      if (!weekViewDays.length) {
+        copyStatusMessage = 'No week data to copy.';
+        setTimeout(() => copyStatusMessage = '', 3000);
+        return;
+      }
+
+      // 1. Get Current Week's Events (using displayedEvents derived store)
+      const currentWeekEventsRaw = displayedEvents();
+
+      if (!currentWeekEventsRaw || currentWeekEventsRaw.length === 0) {
+        copyStatusMessage = 'No events in the current week to copy.';
+        setTimeout(() => copyStatusMessage = '', 3000);
+        return;
+      }
+
+      // 2. Format Events
+      const eventsToExport = currentWeekEventsRaw.map(event => {
+        return {
+          id: event.id,
+          originalId: event.originalId,
+          title: event.title,
+          startDate: event.date.toISOString(),
+          endDate: event.endDate.toISOString(),
+          eventType: event.eventType,
+          isAllDay: event.isAllDay,
+          colorKey: event.colorKey,
+          description: event.description || '',
+          recurrence: event.recurrence ? {
+              rule: event.recurrence.rule,
+              interval: event.recurrence.interval,
+              daysOfWeek: event.recurrence.daysOfWeek,
+              until: event.recurrence.until ? (event.recurrence.until instanceof Date ? event.recurrence.until.toISOString() : event.recurrence.until) : null
+          } : undefined,
+          // Optional: segment details if needed for how it's displayed in a cell
+          // segmentStartDate: event.segmentStartDate.toISOString(),
+          // segmentEndDate: event.segmentEndDate.toISOString(),
+          // isContinuation: event.isContinuation,
+          // continuesNextDay: event.continuesNextDay,
+        };
+      });
+
+      const jsonString = JSON.stringify(eventsToExport, null, 2);
+
+      // 3. Copy to Clipboard
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(jsonString);
+          copyStatusMessage = 'Calendar JSON copied!';
+        } catch (err) {
+          console.error('Failed to copy JSON to clipboard:', err);
+          copyStatusMessage = 'Error: Could not copy.';
+        }
+      } else {
+        copyStatusMessage = 'Clipboard API not available.';
+        console.warn('Clipboard API not available. JSON logged to console.');
+        console.log("Calendar JSON for manual copy:\n", jsonString);
+      }
+
+      // 4. Clear feedback message after a delay
+      setTimeout(() => copyStatusMessage = '', 3000);
+    }
 </script>
 
 <div class="relative h-full flex flex-col text-gray-300 overflow-hidden bg-zinc-900 z-10">
@@ -979,6 +1043,23 @@
                 <input type="checkbox" bind:checked={showFullTimeRange} class="mr-1.5 h-4 w-4 rounded text-green-500 bg-zinc-700 border-zinc-600 focus:ring-green-500 focus:ring-offset-zinc-800 cursor-pointer" />
                 Full Day (0-24h)
             </label>
+            <button
+              on:click={handleCopyCalendarJson}
+              class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-3 sm:px-4 shadow-md hover:shadow-lg transition-all duration-200 flex items-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-800 focus:ring-blue-400"
+              aria-label="Copy week's calendar data as JSON"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1.5 sm:mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              Copy Week JSON
+            </button>
+            {#if copyStatusMessage}
+              <span class="text-sm text-zinc-400 transition-opacity duration-300 whitespace-nowrap"
+                    in:fly={{ y: -5, duration: 200 }}
+                    out:fly={{ y: -5, duration: 150, delay: 2800 }}>
+                {copyStatusMessage}
+              </span>
+            {/if}
             <button
                     on:click={(event) => openNewTaskForm(null, null, event)}
                     class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-3 sm:px-4  shadow-md hover:shadow-lg transition-all duration-200 flex items-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-800 focus:ring-green-400">
