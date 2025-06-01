@@ -1,5 +1,17 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
+    import { fly } from 'svelte/transition';
+    import { user } from '$lib/stores/authStore';
+    import { db } from '$lib/firebase';
+    import {
+        getCalendarEvents,
+        addCalendarEvent,
+        updateCalendarEvent,
+        deleteCalendarEvent,
+        type CalendarEvent as FirestoreCalendarEvent
+    } from '$lib/services/firestoreService';
+    import { Timestamp } from 'firebase/firestore';
+
 
     // --- Define these constants EARLIER ---
     const weekdaysMap = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'] as const;
@@ -9,11 +21,13 @@
     let currentDate = $state(new Date());
     let showFullTimeRange = $state(false);
     let showGoToTodayButton = $state(false);
+    let loading = $state(false);
+    let error = $state('');
 
     let weekViewDays = $state<Array<{ day: number; weekday: string; shortWeekday: string; date: Date; isToday: boolean }>>([]);
     let timeSlots = $state<Array<{ hour: number; minute: number; time: string; isHourStart: boolean; isHalfHour: boolean; isQuarterHour: boolean }>>([]);
     let draggedEvent = $state<DisplayEventSegment | null>(null);
-    let draggedEventOriginalTime = $state<{ date: Date; endDate: Date; originalId: number } | null>(null);
+    let draggedEventOriginalTime = $state<{ date: Date; endDate: Date; originalId: string } | null>(null);
 
     // --- Event Types and Default Colors ---
     const eventTypes = {
@@ -26,7 +40,7 @@
 
     // --- Event Data Structure (Updated) ---
     interface CalendarEvent {
-        id: number;
+        id?: string;
         title: string;
         date: Date; // Start date and time
         endDate: Date; // End date and time
@@ -40,8 +54,10 @@
             until?: Date | null;
         };
         description?: string; // Optional description
-        originalId?: number; // For recurring instances
+        originalId?: string; // For recurring instances
         isOccurrence?: boolean; // True if this is a generated recurring instance
+        userId?: string; // User ID for Firebase
+        createdAt?: Date | Timestamp; // Creation timestamp for Firebase
     }
 
     function getFirstDayOfWeekOccurrence(startDate: Date, targetDayOfWeekJS: number, validDaysShort: (typeof weekdaysMap[number])[], startHour: number = 0, startMinute: number = 0): Date {
@@ -69,50 +85,131 @@
     }
 
 
-    let events = $state<CalendarEvent[]>([
-        {
-            id: 1, title: 'Daily Standup (All Day)',
-            date: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 0, 0),
-            endDate: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate(), 23, 59, 59, 999),
-            colorKey: 'blue', eventType: 'ROUTINE', isAllDay: true,
-            recurrence: { rule: 'DAILY', interval: 1, until: null }
-        },
-        {
-            id: 2, title: 'Gym Session',
-            date: getFirstDayOfWeekOccurrence(new Date(), 1, ['MO', 'WE', 'FR'], 9,0), // Example: Monday, Wednesday, Friday at 9:00 AM
-            endDate: getFirstDayOfWeekOccurrence(new Date(), 1, ['MO', 'WE', 'FR'], 10,0), // Ends at 10:00 AM
-            colorKey: 'orange', eventType: 'ROUTINE', isAllDay: false,
-            recurrence: { rule: 'WEEKLY', interval: 1, daysOfWeek: ['MO', 'WE', 'FR'], until: null }
-        },
-        {
-            id: 3, title: 'Client Call',
-            date: new Date(new Date().getFullYear(), new Date().getMonth(), 15, 14, 0), // 15th of current month, 2:00 PM
-            endDate: new Date(new Date().getFullYear(), new Date().getMonth(), 15, 15, 0), // Ends at 3:00 PM
-            colorKey: 'cyan', eventType: 'APPOINTMENT', isAllDay: false,
-            recurrence: { rule: 'NONE' }
-        },
-        {
-            id: 4, title: 'Project Alpha Due (All Day)',
-            date: new Date(new Date().getFullYear(), new Date().getMonth(), 20, 0, 0), // 20th of current month
-            endDate: new Date(new Date().getFullYear(), new Date().getMonth(), 20, 23, 59, 59, 999),
-            colorKey: 'red', eventType: 'TASK', isAllDay: true,
-            recurrence: { rule: 'NONE' }
-        },
-        {
-            id: 5, title: 'Team Retreat (Multi-Day All-Day)',
-            date: new Date(new Date().getFullYear(), new Date().getMonth(), 10, 0, 0), // From 10th
-            endDate: new Date(new Date().getFullYear(), new Date().getMonth(), 12, 23, 59, 59, 999), // To 12th
-            colorKey: 'green', eventType: 'EVENT', isAllDay: true,
-            recurrence: { rule: 'NONE' }
-        },
-        {
-            id: 6, title: 'Late Work (Crosses Midnight)',
-            date: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 1, 22, 0), // Tomorrow 10:00 PM
-            endDate: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 2, 2, 0), // Day after tomorrow 2:00 AM
-            colorKey: 'purple', eventType: 'TASK', isAllDay: false,
-            recurrence: { rule: 'NONE' }
+    let events = $state<CalendarEvent[]>([]);
+
+    // --- Firebase Integration ---
+    // Convert Firestore events to calendar events
+    function convertFirestoreToCalendarEvents(firestoreEvents: FirestoreCalendarEvent[]): CalendarEvent[] {
+        return firestoreEvents.map(event => {
+            const date = event.date instanceof Timestamp ? new Date(event.date.toMillis()) : event.date;
+            const endDate = event.endDate instanceof Timestamp ? new Date(event.endDate.toMillis()) : event.endDate;
+            const until = event.recurrence?.until instanceof Timestamp ?
+                new Date(event.recurrence.until.toMillis()) :
+                event.recurrence?.until || null;
+
+            return {
+                id: event.id,
+                title: event.title,
+                date,
+                endDate,
+                colorKey: event.colorKey,
+                eventType: event.eventType as keyof typeof eventTypes,
+                isAllDay: event.isAllDay,
+                recurrence: {
+                    rule: event.recurrence?.rule || 'NONE',
+                    interval: event.recurrence?.interval,
+                    daysOfWeek: event.recurrence?.daysOfWeek as (typeof weekdaysMap[number])[],
+                    until: until as Date | null
+                },
+                userId: event.userId,
+                createdAt: event.createdAt
+            };
+        });
+    }
+
+    // Convert calendar events to Firestore events
+    function convertCalendarToFirestoreEvent(calendarEvent: CalendarEvent): Omit<FirestoreCalendarEvent, 'id'> {
+        // Ensure recurrence data is properly formatted with no undefined values
+        const recurrence = {
+            rule: calendarEvent.recurrence.rule || 'NONE',
+            interval: calendarEvent.recurrence.interval || 1,
+            daysOfWeek: calendarEvent.recurrence.daysOfWeek || [],
+            until: calendarEvent.recurrence.until || null
+        };
+
+        return {
+            title: calendarEvent.title,
+            description: calendarEvent.description || '',
+            date: calendarEvent.date,
+            endDate: calendarEvent.endDate,
+            colorKey: calendarEvent.colorKey || eventTypes[calendarEvent.eventType].defaultColorKey,
+            eventType: calendarEvent.eventType,
+            isAllDay: calendarEvent.isAllDay,
+            recurrence,
+            userId: $user?.uid || '',
+            createdAt: calendarEvent.createdAt || new Date()
+        };
+    }
+
+    // Load events from Firebase
+    async function loadEvents() {
+        // Prevent multiple simultaneous loads
+        if (loading) {
+            console.log('Skipping loadEvents call because loading is already in progress');
+            return;
         }
-    ]);
+
+        try {
+            loading = true;
+            error = '';
+            if ($user) {
+                // Calculate start and end dates for the current week view
+                let startDate = null;
+                let endDate = null;
+
+                // Make a local copy of weekViewDays to avoid reactivity issues
+                const currentWeekViewDays = [...weekViewDays];
+
+                if (currentWeekViewDays.length > 0) {
+                    startDate = new Date(currentWeekViewDays[0].date);
+                    startDate.setHours(0, 0, 0, 0);
+
+                    endDate = new Date(currentWeekViewDays[currentWeekViewDays.length - 1].date);
+                    endDate.setHours(23, 59, 59, 999);
+                } else {
+                    console.warn('No week view days available, using current date');
+                    // Fallback to current date if weekViewDays is empty
+                    const today = new Date();
+                    startDate = new Date(today);
+                    startDate.setDate(today.getDate() - today.getDay()); // Start of week
+                    startDate.setHours(0, 0, 0, 0);
+
+                    endDate = new Date(startDate);
+                    endDate.setDate(startDate.getDate() + 6); // End of week
+                    endDate.setHours(23, 59, 59, 999);
+                }
+
+                console.log('Loading events for user:', {
+                    userId: $user.uid,
+                    startDate: startDate?.toISOString(),
+                    endDate: endDate?.toISOString()
+                });
+
+                // Use a try-catch block specifically for the Firebase call
+                try {
+                    const firestoreEvents = await getCalendarEvents($user, startDate, endDate);
+                    // Use a temporary variable to avoid triggering reactivity during processing
+                    const newEvents = convertFirestoreToCalendarEvents(firestoreEvents);
+
+                    // Only update the events state once
+                    events = newEvents;
+                    console.log(`Loaded ${events.length} events`);
+                } catch (firebaseErr: any) {
+                    console.error('Firebase error loading events:', firebaseErr);
+                    error = firebaseErr.message || 'Failed to load events from Firebase';
+                }
+            } else {
+                console.warn('No user logged in, cannot load events');
+                events = []; // Clear events if no user is logged in
+            }
+        } catch (err: any) {
+            error = err.message || 'Failed to load events';
+            console.error('Error loading events:', err);
+            events = []; // Clear events on error
+        } finally {
+            loading = false;
+        }
+    }
 
     // --- Date/Time Utilities ---
     function formatDateForInput(date: Date | null): string {
@@ -194,6 +291,7 @@
         offsetLeft?: number;
         isContinuation?: boolean;
         continuesNextDay?: boolean;
+        originalId: string; // Changed from number to string for Firebase IDs
     }
 
     const displayedEvents = $derived(() => {
@@ -358,6 +456,7 @@
             selectedDate = null;
         }
         currentDate = newDate;
+        // We don't need to set shouldReloadEvents here because the currentDate effect will do it
     }
 
     function navigateNext() {
@@ -368,6 +467,7 @@
             selectedDate = null;
         }
         currentDate = newDate;
+        // We don't need to set shouldReloadEvents here because the currentDate effect will do it
     }
 
     function goToToday() {
@@ -376,6 +476,7 @@
             selectedDate = null;
         }
         currentDate = new Date();
+        // We don't need to set shouldReloadEvents here because the currentDate effect will do it
     }
 
     function getEventTopPosition(eventDate: Date): number {
@@ -401,7 +502,7 @@
         draggedEventOriginalTime = {
             date: new Date(eventData.date),
             endDate: new Date(eventData.endDate),
-            originalId: eventData.originalId as number
+            originalId: eventData.originalId as string
         };
         if (domEvent.dataTransfer) {
             domEvent.dataTransfer.effectAllowed = 'move';
@@ -409,7 +510,7 @@
         }
     }
 
-    function dropEvent(day: { date: Date }, timeSlot: { hour: number, minute: number }) {
+    async function dropEvent(day: { date: Date }, timeSlot: { hour: number, minute: number }) {
         if (!draggedEvent || !draggedEventOriginalTime) return;
         if (draggedEvent.isAllDay) {
             draggedEvent = null;
@@ -419,7 +520,7 @@
 
         const baseEventIndex = events.findIndex(e => e.id === draggedEventOriginalTime!.originalId);
         if (baseEventIndex === -1) {
-            console.error("Base event not found for dragging.");
+            console.error("Base event not found for dragging");
             draggedEvent = null;
             draggedEventOriginalTime = null;
             return;
@@ -440,14 +541,27 @@
             }
         }
 
-        events[baseEventIndex] = baseEvent;
-        events = [...events];
+        try {
+            loading = true;
+            if (baseEvent.id) {
+                // Update in Firebase
+                await updateCalendarEvent(baseEvent.id, convertCalendarToFirestoreEvent(baseEvent));
 
-        draggedEvent = null;
-        draggedEventOriginalTime = null;
+                // Update local state
+                events[baseEventIndex] = baseEvent;
+                events = [...events];
+            }
+        } catch (err: any) {
+            error = err.message || 'Failed to update event';
+            console.error('Error updating event:', err);
+        } finally {
+            loading = false;
+            draggedEvent = null;
+            draggedEventOriginalTime = null;
+        }
     }
 
-    function dropAllDayEvent(day: { date: Date }) {
+    async function dropAllDayEvent(day: { date: Date }) {
         if (!draggedEvent || !draggedEventOriginalTime || draggedEvent.isAllDay) {
             if (draggedEvent && draggedEvent.isAllDay) {
                 draggedEvent = null;
@@ -473,10 +587,25 @@
         baseEvent.date = newStartDate;
         baseEvent.endDate = newEndDate;
         baseEvent.isAllDay = true;
-        events[baseEventIndex] = baseEvent;
-        events = [...events];
-        draggedEvent = null;
-        draggedEventOriginalTime = null;
+
+        try {
+            loading = true;
+            if (baseEvent.id) {
+                // Update in Firebase
+                await updateCalendarEvent(baseEvent.id, convertCalendarToFirestoreEvent(baseEvent));
+
+                // Update local state
+                events[baseEventIndex] = baseEvent;
+                events = [...events];
+            }
+        } catch (err: any) {
+            error = err.message || 'Failed to update event';
+            console.error('Error updating event:', err);
+        } finally {
+            loading = false;
+            draggedEvent = null;
+            draggedEventOriginalTime = null;
+        }
     }
 
     function cancelDrag() {
@@ -487,10 +616,10 @@
     // --- Form State & Logic ---
     let showTaskForm = $state(false);
     let isEditingTask = $state(false);
-    let editingEventOriginalId = $state<number | null>(null);
+    let editingEventOriginalId = $state<string | null>(null);
 
     const initialTaskFormData = {
-        id: null as number | null,
+        id: null as string | null,
         title: '',
         date: formatDateForInput(new Date()),
         time: formatTimeForInput(new Date()),
@@ -562,7 +691,7 @@
     function openEditTaskForm(eventInstance: DisplayEventSegment, domEvent: MouseEvent) {
         const baseEvent = events.find(e => e.id === eventInstance.originalId);
         if (!baseEvent) {
-            console.error("Cannot find base event to edit.");
+            console.error("Cannot find base event to edit");
             return;
         }
         isEditingTask = true;
@@ -588,7 +717,7 @@
         showTaskForm = false;
     }
 
-    function handleSubmitTaskForm() {
+    async function handleSubmitTaskForm() {
         if (taskFormData.title.trim() === '') return;
         const [sYear, sMonth, sDay] = taskFormData.date.split('-').map(Number);
         const [sHours, sMinutes] = taskFormData.isAllDay ? [0,0] : taskFormData.time.split(':').map(Number);
@@ -624,28 +753,55 @@
             colorKey: taskFormData.colorKey,
             eventType: taskFormData.eventType,
             isAllDay: taskFormData.isAllDay,
-            recurrence: recurrenceData
+            recurrence: recurrenceData,
+            userId: $user?.uid || '',
+            createdAt: new Date()
         };
-        if (isEditingTask && editingEventOriginalId !== null) {
-            const eventIndex = events.findIndex(e => e.id === editingEventOriginalId);
-            if (eventIndex > -1) {
-                events[eventIndex] = {
-                    ...events[eventIndex],
-                    ...eventToSave
-                };
+
+        try {
+            loading = true;
+            if (isEditingTask && editingEventOriginalId !== null) {
+                // Update existing event in Firebase
+                const eventToUpdate = events.find(e => e.id === editingEventOriginalId);
+                if (eventToUpdate?.id) {
+                    await updateCalendarEvent(eventToUpdate.id, convertCalendarToFirestoreEvent({
+                        ...eventToUpdate,
+                        ...eventToSave
+                    }));
+
+                    // Update local state
+                    const eventIndex = events.findIndex(e => e.id === editingEventOriginalId);
+                    if (eventIndex > -1) {
+                        events[eventIndex] = {
+                            ...events[eventIndex],
+                            ...eventToSave
+                        };
+                    }
+                }
+            } else {
+                // Add new event to Firebase
+                const firestoreEvent = convertCalendarToFirestoreEvent(eventToSave);
+                const newEvent = await addCalendarEvent(firestoreEvent);
+
+                // Update local state
+                if (newEvent.id) {
+                    events.push({
+                        id: newEvent.id,
+                        ...eventToSave
+                    });
+                }
             }
-        } else {
-            const newId = (events.length > 0 ? Math.max(0, ...events.map(e => e.id)) : 0) + 1;
-            events.push({
-                id: newId,
-                ...eventToSave
-            });
+            events = [...events];
+            closeTaskForm();
+        } catch (err: any) {
+            error = err.message || 'Failed to save event';
+            console.error('Error saving event:', err);
+        } finally {
+            loading = false;
         }
-        events = [...events];
-        closeTaskForm();
     }
 
-    function handleDeleteTask() {
+    async function handleDeleteTask() {
         if (!isEditingTask || editingEventOriginalId === null) return;
         const eventToDelete = events.find(e => e.id === editingEventOriginalId);
         let confirmMessage = "Are you sure you want to delete this event?";
@@ -653,8 +809,22 @@
             confirmMessage = "This is a recurring event. Deleting it will remove all its occurrences. Are you sure?";
         }
         if (typeof window !== 'undefined' && window.confirm(confirmMessage)) {
-            events = events.filter(e => e.id !== editingEventOriginalId);
-            closeTaskForm();
+            try {
+                loading = true;
+                if (eventToDelete?.id) {
+                    // Delete from Firebase
+                    await deleteCalendarEvent(eventToDelete.id);
+
+                    // Update local state
+                    events = events.filter(e => e.id !== editingEventOriginalId);
+                    closeTaskForm();
+                }
+            } catch (err: any) {
+                error = err.message || 'Failed to delete event';
+                console.error('Error deleting event:', err);
+            } finally {
+                loading = false;
+            }
         }
     }
 
@@ -706,8 +876,16 @@
     });
 
     onMount(() => {
+        // Generate time slots and week view days first
         generateTimeSlots();
         generateWeekViewDays();
+
+        // Set the flag to load events after initialization
+        // This will trigger the effect that loads events
+        setTimeout(() => {
+            shouldReloadEvents = true;
+        }, 0);
+
         const clickHandler = (event: MouseEvent) => {
             if (draggedEvent && event.target && !(event.target as HTMLElement).closest('.calendar-event, .calendar-grid-cell, .all-day-event-area')) {
                 cancelDrag();
@@ -724,9 +902,26 @@
         };
     });
 
+    // Track when we need to reload events
+    let shouldReloadEvents = $state(false);
+
     $effect(() => {
         if (currentDate) {
             generateWeekViewDays();
+            // Mark that we need to reload events, but don't do it directly in this effect
+            shouldReloadEvents = true;
+        }
+    });
+
+    // Separate effect to handle event loading
+    $effect(() => {
+        if (shouldReloadEvents && weekViewDays.length > 0) {
+            // Reset the flag first to prevent loops
+            shouldReloadEvents = false;
+            // Use setTimeout to break the reactive chain
+            setTimeout(() => {
+                loadEvents();
+            }, 0);
         }
     });
 
@@ -737,26 +932,39 @@
     });
 </script>
 
-<div class="relative h-full flex flex-col text-gray-300 rounded-lg p-4 sm:p-6 overflow-hidden bg-zinc-900 z-10">
-    <div class="flex items-center justify-between w-full mb-3 p-3 bg-zinc-800 rounded-lg shadow-md border border-zinc-700 shrink-0">
+<div class="relative h-full flex flex-col text-gray-300 overflow-hidden bg-zinc-900 z-10">
+    {#if error}
+        <div class="bg-red-500/20 border border-red-500/50 text-red-300 px-4 py-3  text-sm mb-3"
+             in:fly={{ y: 10, duration: 300 }}>
+            {error}
+            <button
+                class="float-right text-red-300 hover:text-red-100"
+                on:click={() => error = ''}
+            >
+                &times;
+            </button>
+        </div>
+    {/if}
+
+    <div class="flex items-center justify-between w-full p-3 bg-zinc-800  shadow-md border border-zinc-700 shrink-0">
         <div class="flex items-center gap-2">
             {#if showGoToTodayButton}
                 <button
                         on:click={goToToday}
-                        class="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-gray-200 rounded-md text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-green-500"
+                        class="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-gray-200  text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-green-500"
                         aria-label="Go to Today">
                     Today
                 </button>
             {/if}
             <button
                     on:click={navigatePrevious}
-                    class="p-1.5 hover:bg-zinc-700 text-green-500 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500"
+                    class="p-1.5 hover:bg-zinc-700 text-green-500  transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500"
                     aria-label="Previous week">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
             </button>
             <button
                     on:click={navigateNext}
-                    class="p-1.5 hover:bg-zinc-700 text-green-500 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500"
+                    class="p-1.5 hover:bg-zinc-700 text-green-500  transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-green-500"
                     aria-label="Next week">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
             </button>
@@ -773,7 +981,7 @@
             </label>
             <button
                     on:click={(event) => openNewTaskForm(null, null, event)}
-                    class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-3 sm:px-4 rounded-md shadow-md hover:shadow-lg transition-all duration-200 flex items-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-800 focus:ring-green-400">
+                    class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-3 sm:px-4  shadow-md hover:shadow-lg transition-all duration-200 flex items-center text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-800 focus:ring-green-400">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1.5 sm:mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
                 Add
             </button>
@@ -792,18 +1000,18 @@
             <div class="flex flex-col h-full">
                 <div class="flex justify-between items-center p-4 sm:p-5 h-16 border-b border-zinc-700 shrink-0">
                     <h2 id="task-form-title" class="text-lg font-semibold text-green-400">{isEditingTask ? 'Edit Entry' : 'New Calendar Entry'}</h2>
-                    <button on:click={closeTaskForm} class="text-zinc-500 hover:text-zinc-300 transition-colors p-1 rounded-full hover:bg-zinc-700">
+                    <button on:click={closeTaskForm} class="text-zinc-500 hover:text-zinc-300 transition-colors p-1  hover:bg-zinc-700">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                 </div>
                 <form on:submit|preventDefault={handleSubmitTaskForm} class="flex-grow p-4 sm:p-5 space-y-4 overflow-y-auto" id="task-form-id">
                     <div>
                         <label for="title-input" class="block text-xs font-medium text-zinc-300 mb-1">Title</label>
-                        <input type="text" id="title-input" bind:value={taskFormData.title} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 placeholder-zinc-500 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors" placeholder="E.g., Meeting with team" required />
+                        <input type="text" id="title-input" bind:value={taskFormData.title} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 placeholder-zinc-500 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors" placeholder="E.g., Meeting with team" required />
                     </div>
                     <div>
                         <label for="eventType-select" class="block text-xs font-medium text-zinc-300 mb-1">Type</label>
-                        <select id="eventType-select" bind:value={taskFormData.eventType} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors">
+                        <select id="eventType-select" bind:value={taskFormData.eventType} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors">
                             {#each Object.entries(eventTypes) as [key, typeObj]}
                                 <option value={key}>{typeObj.label}</option>
                             {/each}
@@ -812,24 +1020,24 @@
                     <div class="flex items-center space-x-4">
                         <div class="flex-1">
                             <label for="date-input" class="block text-xs font-medium text-zinc-300 mb-1">Start Date</label>
-                            <input type="date" id="date-input" bind:value={taskFormData.date} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required />
+                            <input type="date" id="date-input" bind:value={taskFormData.date} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required />
                         </div>
                         {#if !taskFormData.isAllDay}
                             <div class="w-28">
                                 <label for="time-input" class="block text-xs font-medium text-zinc-300 mb-1">Start Time</label>
-                                <input type="time" id="time-input" bind:value={taskFormData.time} step="900" class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required={!taskFormData.isAllDay} />
+                                <input type="time" id="time-input" bind:value={taskFormData.time} step="900" class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required={!taskFormData.isAllDay} />
                             </div>
                         {/if}
                     </div>
                     <div class="flex items-center space-x-4">
                         <div class="flex-1">
                             <label for="endDate-input" class="block text-xs font-medium text-zinc-300 mb-1">End Date</label>
-                            <input type="date" id="endDate-input" bind:value={taskFormData.endDate} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required />
+                            <input type="date" id="endDate-input" bind:value={taskFormData.endDate} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required />
                         </div>
                         {#if !taskFormData.isAllDay}
                             <div class="w-28">
                                 <label for="endTime-input" class="block text-xs font-medium text-zinc-300 mb-1">End Time</label>
-                                <input type="time" id="endTime-input" bind:value={taskFormData.endTime} step="900" class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required={!taskFormData.isAllDay} />
+                                <input type="time" id="endTime-input" bind:value={taskFormData.endTime} step="900" class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500" required={!taskFormData.isAllDay} />
                             </div>
                         {/if}
                     </div>
@@ -842,7 +1050,7 @@
 
                     <div>
                         <label for="recurrenceRule-select" class="block text-xs font-medium text-zinc-300 mb-1">Repeats</label>
-                        <select id="recurrenceRule-select" bind:value={taskFormData.recurrenceRule} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors">
+                        <select id="recurrenceRule-select" bind:value={taskFormData.recurrenceRule} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors">
                             <option value="NONE">Does not repeat</option>
                             <option value="DAILY">Daily</option>
                             <option value="WEEKLY">Weekly</option>
@@ -856,7 +1064,7 @@
                                 {#each weekdaysMap as dayCode, index (dayCode)}
                                     <button type="button"
                                             on:click={() => toggleRecurrenceDay(dayCode)}
-                                            class="px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors
+                                            class="px-2.5 py-1.5  text-xs font-medium border transition-colors
                                                    {taskFormData.recurrenceDaysOfWeek.includes(dayCode) ? 'bg-green-500 text-white border-green-500' : 'bg-zinc-600 hover:bg-zinc-500 text-zinc-300 border-zinc-500'}">
                                         {fullWeekdays[index]}
                                     </button>
@@ -868,7 +1076,7 @@
                     {#if taskFormData.recurrenceRule !== 'NONE'}
                         <div>
                             <label for="recurrenceUntil-date" class="block text-xs font-medium text-zinc-300 mb-1">End Date (Optional)</label>
-                            <input type="date" id="recurrenceUntil-date" bind:value={taskFormData.recurrenceUntil} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm rounded-md focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors" />
+                            <input type="date" id="recurrenceUntil-date" bind:value={taskFormData.recurrenceUntil} class="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 text-gray-100 text-sm  focus:outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500 transition-colors" />
                         </div>
                     {/if}
 
@@ -876,7 +1084,7 @@
                         <label class="block text-xs font-medium text-zinc-300 mb-1.5">Color</label>
                         <div class="flex flex-wrap gap-2">
                             {#each colorOptions as colorOpt (colorOpt.value)}
-                                <button type="button" class="w-6 h-6 rounded-full {colorOpt.class} border-2 transition-all duration-150 flex items-center justify-center
+                                <button type="button" class="w-6 h-6  {colorOpt.class} border-2 transition-all duration-150 flex items-center justify-center
                                     {taskFormData.colorKey === colorOpt.value ? 'border-green-400 scale-110 ring-2 ring-green-400 ring-offset-1 ring-offset-zinc-700' : 'border-transparent hover:border-zinc-500'}"
                                         on:click={() => taskFormData.colorKey = colorOpt.value} title={colorOpt.label}>
                                     {#if taskFormData.colorKey === colorOpt.value}
@@ -889,24 +1097,50 @@
                 </form>
                 <div class="flex justify-end space-x-3 p-4 sm:p-5 border-t border-zinc-700/80 shrink-0">
                     {#if isEditingTask}
-                        <button type="button" on:click={handleDeleteTask} class="px-4 py-2 border border-red-500/70 text-red-400 hover:bg-red-500/20 hover:border-red-500 rounded-md transition-colors duration-150 font-medium text-sm">Delete</button>
+                        <button type="button" on:click={handleDeleteTask} disabled={loading} class="px-4 py-2 border border-red-500/70 text-red-400 hover:bg-red-500/20 hover:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed  transition-colors duration-150 font-medium text-sm flex items-center justify-center min-w-[80px]">
+                            {#if loading}
+                                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-red-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Deleting...
+                            {:else}
+                                Delete
+                            {/if}
+                        </button>
                     {/if}
-                    <button type="button" on:click={closeTaskForm} class="px-4 py-2 border border-zinc-600 text-zinc-300 rounded-md hover:bg-zinc-700 hover:text-gray-100 transition-colors duration-150 font-medium text-sm ml-auto">Cancel</button>
-                    <button type="submit" form="task-form-id" class="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-all duration-150 font-semibold shadow-md hover:shadow-lg text-sm">
-                        {isEditingTask ? 'Update Entry' : 'Add Entry'}
+                    <button type="button" on:click={closeTaskForm} class="px-4 py-2 border border-zinc-600 text-zinc-300  hover:bg-zinc-700 hover:text-gray-100 transition-colors duration-150 font-medium text-sm ml-auto">Cancel</button>
+                    <button type="submit" form="task-form-id" disabled={loading} class="px-4 py-2 bg-green-500 text-white  hover:bg-green-600 disabled:bg-green-500/50 disabled:cursor-not-allowed transition-all duration-150 font-semibold shadow-md hover:shadow-lg text-sm flex items-center justify-center min-w-[120px]">
+                        {#if loading}
+                            <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            {isEditingTask ? 'Updating...' : 'Adding...'}
+                        {:else}
+                            {isEditingTask ? 'Update Entry' : 'Add Entry'}
+                        {/if}
                     </button>
                 </div>
             </div>
         </aside>
     {/if}
 
-    <div class="flex-grow bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 overflow-hidden flex flex-col min-h-0">
+    <div class="flex-grow bg-zinc-800  shadow-lg border border-zinc-700 overflow-hidden flex flex-col min-h-0 relative">
+        {#if loading}
+            <div class="absolute inset-0 bg-zinc-900/50 backdrop-blur-sm z-50 flex items-center justify-center">
+                <div class="bg-zinc-800 p-6  shadow-xl flex flex-col items-center">
+                    <div class="animate-spin  h-12 w-12 border-t-2 border-b-2 border-green-500 mb-4"></div>
+                    <p class="text-gray-300">Loading events...</p>
+                </div>
+            </div>
+        {/if}
         <div class="grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))] bg-zinc-700/60 text-green-400 sticky top-0 z-20 shadow-sm border-b border-zinc-700">
             <div class="p-2.5 text-center text-xs font-semibold border-r border-zinc-600/70 flex items-center justify-center text-zinc-400">Time</div>
             {#each weekViewDays as dayHeader (dayHeader.date.toDateString())}
                 <div class="p-1.5 sm:p-2 text-center border-r border-zinc-600/70 last:border-r-0 cursor-pointer hover:bg-zinc-700/80 transition-colors" on:click={() => handleDateSelectForSidebar(dayHeader.day)}>
                     <div class="text-[10px] sm:text-xs font-semibold tracking-wide uppercase text-zinc-400">{dayHeader.shortWeekday}</div>
-                    <div class={`text-base sm:text-lg font-bold mt-0.5 ${dayHeader.isToday ? 'bg-green-500 text-white rounded-full w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center mx-auto' : 'text-gray-200'}`}>{dayHeader.day}</div>
+                    <div class={`text-base sm:text-lg font-bold mt-0.5 ${dayHeader.isToday ? 'bg-green-500 text-white  w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center mx-auto' : 'text-gray-200'}`}>{dayHeader.day}</div>
                 </div>
             {/each}
         </div>
@@ -915,7 +1149,7 @@
             <div class="grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))] h-full relative">
                 <div class="border-r border-zinc-600/70"></div> {#each weekViewDays as day (day.date.toDateString())}
                 {@const allDayEventsOnThisDay = getEventsForDayColumn(day, displayedEvents()).allDay}
-                <div class="relative border-r border-zinc-600/70 last:border-r-0 p-0.5 space-y-0.5 overflow-hidden"
+                <div class="relative border-r border-zinc-600/70 last:border-r-0 p-0.5 -z-10space-y-0.5 overflow-hidden"
                      on:dragover|preventDefault
                      on:drop|preventDefault={() => dropAllDayEvent(day)}>
                     {#each allDayEventsOnThisDay as eventItem (eventItem.id)}
@@ -948,9 +1182,9 @@
             <div class="grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]" style="min-height: {timeSlots.length * timeSlotHeight}px;">
                 <div class="border-r border-zinc-600/70 relative">
                     {#each timeSlots as slot (slot.time)}
-                        <div class="relative" style="height: {timeSlotHeight}px;">
+                        <div class="relative z-50" style="height: {timeSlotHeight}px;">
                             {#if slot.isHourStart}
-                                <div class="absolute -top-1.5 right-1.5 text-[9px] sm:text-[10px] text-zinc-400 font-medium select-none pointer-events-none">
+                                <div class="absolute -top-1.5 right-1.5 text-[9px] sm:text-[10px] z-20text-zinc-400 font-medium select-none pointer-events-none">
                                     {slot.hour.toString().padStart(2, '0')}:00 </div>
                             {/if}
                         </div>
@@ -1017,7 +1251,7 @@
                 {:else}
                     <h3 id="day-details-title" class="text-lg font-semibold text-gray-100">Details</h3>
                 {/if}
-                <button on:click={closeDayDetailsSidebar} aria-label="Close day details" class="text-zinc-400 hover:text-gray-100 p-1 rounded-md hover:bg-zinc-700">
+                <button on:click={closeDayDetailsSidebar} aria-label="Close day details" class="text-zinc-400 hover:text-gray-100 p-1  hover:bg-zinc-700">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1027,7 +1261,7 @@
                 {#if eventsForSelectedDateInSidebar.length > 0}
                     {#each eventsForSelectedDateInSidebar as eventItem (eventItem.id)}
                         {@const eventCssClass = getEventDisplayCssClass(eventItem.eventType, eventItem.colorKey)}
-                        <div class="p-3 rounded-md {eventItem.isAllDay ? 'cursor-default' : 'cursor-pointer hover:brightness-125'} transition-all {eventCssClass}"
+                        <div class="p-3  {eventItem.isAllDay ? 'cursor-default' : 'cursor-pointer hover:brightness-125'} transition-all {eventCssClass}"
                              on:click={(e) => openEditTaskForm(eventItem, e)}>
                             <p class="font-medium text-sm mb-0.5">{eventItem.title}</p>
                             {#if !eventItem.isAllDay}
@@ -1049,7 +1283,7 @@
                     {@const dayForNewEvent = weekViewDays.find(d => d.day === selectedDate && d.date.getMonth() === currentDate.getMonth())}
                     <button
                             on:click={(e) => openNewTaskForm(dayForNewEvent, null, e)}
-                            class="w-full flex justify-center items-center bg-green-500 hover:bg-green-600 text-white text-sm font-semibold py-2 px-4 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-800 focus-visible:ring-green-500 transition-colors">
+                            class="w-full flex justify-center items-center bg-green-500 hover:bg-green-600 text-white text-sm font-semibold py-2 px-4  focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-800 focus-visible:ring-green-500 transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                         </svg>
@@ -1058,7 +1292,7 @@
                 {:else}
                     <button
                             disabled
-                            class="w-full flex justify-center items-center bg-zinc-600 text-zinc-400 text-sm font-semibold py-2 px-4 rounded-md cursor-not-allowed">
+                            class="w-full flex justify-center items-center bg-zinc-600 text-zinc-400 text-sm font-semibold py-2 px-4  cursor-not-allowed">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                         </svg>
